@@ -10,6 +10,10 @@ namespace NonBinaryGender
     {
         static OnStartup()
         {
+            if (Enum_Patches.IsCoreClr)
+            {
+                Enum_Patches.AddEnbyToEnumInfo();
+            }
             Harmony harmony = new("divineDerivative.NonBinaryGender");
             harmony.PatchAll();
 #if v1_4
