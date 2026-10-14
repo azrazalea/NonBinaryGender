@@ -16,12 +16,58 @@ namespace NonBinaryGender.Patches
     {
         public static void PatchPE(this Harmony harmony)
         {
-            harmony.Patch(AccessTools.Method(typeof(TabWorker_Bio_Humanlike), "DoButtons"), transpiler: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(DoButtonsTranspiler))));
-            harmony.Patch(AccessTools.Method(typeof(Dialog_AppearanceEditor), "DoLeftSection"), transpiler: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(DoLeftSectionTranspiler))));
+            //The Pawn Editor fork moved the gender menus into their own methods: DrawSexButton(Pawn) on the bio tab
+            //and GenderOptions() on the appearance editor. Same "Male" then List.Add pattern, so the same transpiler works
+            MethodInfo drawSexButton = AccessTools.Method(typeof(TabWorker_Bio_Humanlike), "DrawSexButton");
+            if (drawSexButton != null)
+            {
+                harmony.Patch(drawSexButton, transpiler: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(DrawSexButtonTranspiler))));
+            }
+            else
+            {
+                harmony.Patch(AccessTools.Method(typeof(TabWorker_Bio_Humanlike), "DoButtons"), transpiler: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(DoButtonsTranspiler))));
+            }
+            MethodInfo genderOptions = AccessTools.Method(typeof(Dialog_AppearanceEditor), "GenderOptions");
+            harmony.Patch(genderOptions ?? AccessTools.Method(typeof(Dialog_AppearanceEditor), "DoLeftSection"), transpiler: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(DoLeftSectionTranspiler))));
             harmony.Patch(AccessTools.Method(typeof(Dialog_AppearanceEditor), "IsAllowed", [typeof(HeadTypeDef), typeof(Pawn)]), transpiler: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(HeadTypeTranspiler))));
 
             MethodInfo HeadTypePredicate = FindPredicate();
-            harmony.Patch(HeadTypePredicate, prefix: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(HeadTypePredicatePrefix))));
+            if (HeadTypePredicate != null)
+            {
+                harmony.Patch(HeadTypePredicate, prefix: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(HeadTypePredicatePrefix))));
+            }
+            else
+            {
+                //The Pawn Editor fork moved the head type filter into HeadTypes(), where it's a closure method
+                MethodInfo closurePredicate = FindClosurePredicate();
+                if (closurePredicate != null)
+                {
+                    harmony.Patch(closurePredicate, prefix: new HarmonyMethod(AccessTools.Method(typeof(PawnEditorPatches), nameof(HeadTypeClosurePredicatePrefix))));
+                }
+                else
+                {
+                    LogUtil.Warning("Could not find Pawn Editor's head type filter; enby pawns may not see all head types there");
+                }
+            }
+
+            static MethodInfo FindClosurePredicate()
+            {
+                foreach (Type nested in typeof(Dialog_AppearanceEditor).GetNestedTypes(AccessTools.all).Where(t => t.GetCustomAttribute<System.Runtime.CompilerServices.CompilerGeneratedAttribute>() != null))
+                {
+                    if (AccessTools.Field(nested, "<>4__this") == null)
+                    {
+                        continue;
+                    }
+                    foreach (MethodInfo method in nested.GetMethods(AccessTools.all))
+                    {
+                        if (method.ReturnType == typeof(bool) && method.Name.Contains("HeadTypes") && method.GetParameters().Length == 1 && method.GetParameters()[0].ParameterType == typeof(HeadTypeDef) && method.GetParameters()[0].Name == "type")
+                        {
+                            return method;
+                        }
+                    }
+                }
+                return null;
+            }
 
             static MethodInfo FindPredicate()
             {
@@ -72,6 +118,12 @@ namespace NonBinaryGender.Patches
             return GenderButtonTranspiler(instructions, OpCodes.Ldarg_2);
         }
 
+        //Fork's DrawSexButton is an instance method taking the pawn as its first parameter
+        public static IEnumerable<CodeInstruction> DrawSexButtonTranspiler(IEnumerable<CodeInstruction> instructions)
+        {
+            return GenderButtonTranspiler(instructions, OpCodes.Ldarg_1);
+        }
+
         public static IEnumerable<CodeInstruction> DoLeftSectionTranspiler(IEnumerable<CodeInstruction> instructions)
         {
             return GenderButtonTranspiler(instructions, OpCodes.Ldarg_0, typeof(Dialog_AppearanceEditor));
@@ -120,6 +172,14 @@ namespace NonBinaryGender.Patches
                 return false;
             }
             return true;
+        }
+
+        //Same as HeadTypePredicatePrefix, for the fork's closure version where the editor is captured as <>4__this
+        public static bool HeadTypeClosurePredicatePrefix(object __instance, ref bool __result)
+        {
+            Dialog_AppearanceEditor editor = Traverse.Create(__instance).Field("<>4__this").GetValue<Dialog_AppearanceEditor>();
+            Pawn pawn = editor == null ? null : Traverse.Create(editor).Field("pawn").GetValue<Pawn>();
+            return pawn == null || HeadTypePredicatePrefix(pawn, ref __result);
         }
     }
 }
